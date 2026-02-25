@@ -1,15 +1,15 @@
 /*
- * Универсальный сервер датчиков и исполнительных устройств — v2
+ * Universal sensor and actuator server — v2
  * Arduino Uno R4 WiFi + ESP32
  *
- * GET  /help   — образец максимального запроса
- * GET  /status — состояние платформы (uptime, heap, RSSI, IP)
- * POST /       — строгий JSON: датчики и/или функции
+ * GET  /help   — example of a maximum request
+ * GET  /status — platform state (uptime, heap, RSSI, IP)
+ * POST /       — strict JSON: sensors and/or functions
  *
- * Архитектура:
- *   - Таблицы диспетчеризации вместо цепочек if/else
- *   - Единый планировщик задач (WiFi watchdog + daily restart)
- *   - Платформенные различия изолированы в 3 функциях-обёртках
+ * Architecture:
+ *   - Dispatch tables instead of if/else chains
+ *   - Single task scheduler (WiFi watchdog + daily restart)
+ *   - Platform differences isolated in 3 wrapper functions
  */
 
 #include <ArduinoJson.h>
@@ -28,7 +28,7 @@
   #include <time.h>
   #define PLATFORM_NAME "ESP32"
 #else
-  #error "Поддерживаются только Arduino Uno R4 WiFi и ESP32"
+  #error "Only Arduino Uno R4 WiFi and ESP32 are supported"
 #endif
 
 #include "DHT.h"
@@ -37,7 +37,7 @@
 #include <Preferences.h>
 #include "secrets.h"
 
-// ============== Конфигурация ==============
+// ============== Configuration ==============
 
 const char* wifiSsid = WIFI_SSID;
 const char* wifiPass = WIFI_PASS;
@@ -49,7 +49,7 @@ const char* wifiPass = WIFI_PASS;
 #define GMT_OFFSET_SEC     (1 * 3600)
 #define DAYLIGHT_OFFSET    (1 * 3600)
 
-// ============== Глобальные объекты ==============
+// ============== Global objects ==============
 
 static Adafruit_BME280 bme280;
 static Preferences prefs;
@@ -194,7 +194,7 @@ static void tickRestart() {
   platformRestart();
 }
 
-// ============== Вспомогательное ==============
+// ============== Utilities ==============
 
 static float round1(float v) {
   return roundf(v * 10.0f) / 10.0f;
@@ -206,7 +206,7 @@ static int pinFrom(JsonObject pins, const char* key) {
   return PIN_MISSING;
 }
 
-// ============== 3. Датчики ==============
+// ============== 3. Sensors ==============
 
 static void sensorDht(JsonObject req, JsonObject res) {
   JsonObject pins = req["pins"].as<JsonObject>();
@@ -276,7 +276,7 @@ static void sensorSoil(JsonObject req, JsonObject res) {
   s1["sensorValue"] = raw;
 }
 
-// ============== 3. Таблица датчиков ==============
+// ============== 3. Sensor dispatch table ==============
 
 struct SensorEntry { const char* name; void (*fn)(JsonObject, JsonObject); };
 
@@ -287,7 +287,7 @@ static SensorEntry SENSOR_TABLE[] = {
 };
 static const size_t SENSOR_COUNT = sizeof(SENSOR_TABLE) / sizeof(SENSOR_TABLE[0]);
 
-// ============== 4. Функции ==============
+// ============== 4. Functions ==============
 
 static void funcPump(JsonObject req, JsonObject res) {
   JsonObject pins = req["pins"].as<JsonObject>();
@@ -297,16 +297,16 @@ static void funcPump(JsonObject req, JsonObject res) {
 
   int duration = req["duration"].as<int>();
   pinMode(pin, OUTPUT);
-  digitalWrite(pin, HIGH);   // active-LOW: убедиться что выкл
-  digitalWrite(pin, LOW);    // включить
+  digitalWrite(pin, HIGH);   // active-LOW: ensure off
+  digitalWrite(pin, LOW);    // turn on
   delay(duration);
-  digitalWrite(pin, HIGH);   // выключить
+  digitalWrite(pin, HIGH);   // turn off
 
   res["duration"] = duration;
   res["executed"] = true;
 }
 
-// ============== 4. Таблица функций ==============
+// ============== 4. Function dispatch table ==============
 
 struct FuncEntry { const char* name; void (*fn)(JsonObject, JsonObject); };
 
@@ -365,7 +365,7 @@ static String getStatusJson() {
   String out; serializeJson(doc, out); return out;
 }
 
-// ============== POST / — разбор и диспетчеризация ==============
+// ============== POST / — parsing and dispatch ==============
 
 static String processCommand(const String& body) {
   JsonDocument doc;
@@ -381,7 +381,7 @@ static String processCommand(const String& body) {
   JsonArray sensorsOut = res["sensors"].to<JsonArray>();
   JsonArray funcsOut   = res["functions"].to<JsonArray>();
 
-  // --- Датчики ---
+  // --- Sensors ---
   if (doc["sensors"].is<JsonArray>()) {
     for (JsonVariant s : doc["sensors"].as<JsonArray>()) {
       JsonObject so = sensorsOut.add<JsonObject>();
@@ -402,7 +402,7 @@ static String processCommand(const String& body) {
     }
   }
 
-  // --- Функции ---
+  // --- Functions ---
   if (doc["functions"].is<JsonObject>()) {
     JsonObject reqF = doc["functions"].as<JsonObject>();
     JsonObject outF = funcsOut.add<JsonObject>();
