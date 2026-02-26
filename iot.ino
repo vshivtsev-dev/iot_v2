@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ArduinoOTA.h>
 #include <Wire.h>
 #include <time.h>
 #include <esp_sntp.h>
@@ -160,7 +161,7 @@ static int pinFrom(JsonObject pins, const char* key) {
   return PIN_MISSING;
 }
 
-// ============== 3. Sensors ==============
+// ============== Sensors ==============
 
 static void sensorDht(JsonObject req, JsonObject res) {
   JsonObject pins = req["pins"].as<JsonObject>();
@@ -256,7 +257,6 @@ static void funcPump(JsonObject req, JsonObject res) {
   digitalWrite(pin, HIGH);   // turn off
 
   res["duration"] = duration;
-  res["executed"] = true;
 }
 
 // ============== Function dispatch table ==============
@@ -285,8 +285,8 @@ static String getHelpJson() {
   dht["pins"].to<JsonObject>()["DIGITAL"] = 4;
 
   JsonObject soil = sensors.add<JsonObject>();
-  soil["name"] = "SOIL"; soil["id"] = 1; soil["dry"] = 610; soil["wet"] = 220;
-  soil["pins"].to<JsonObject>()["ANALOG"] = 0;
+  soil["name"] = "SOIL"; soil["id"] = 1; soil["dry"] = 3300; soil["wet"] = 1000;
+  soil["pins"].to<JsonObject>()["ANALOG"] = 32;
 
   JsonObject pump1 = root["functions"]["PUMP"]["1"].to<JsonObject>();
   pump1["pins"].to<JsonObject>()["DIGITAL"] = 4;
@@ -416,6 +416,8 @@ void setup() {
     delay(500);
   }
 
+  ArduinoOTA.begin();
+
   server.on("/help", HTTP_GET, []() {
     sendJsonResponse(200, getHelpJson());
   });
@@ -443,6 +445,7 @@ void setup() {
 // ============== Loop ==============
 
 void loop() {
+  ArduinoOTA.handle();
   runTasks();
   server.handleClient();
 }

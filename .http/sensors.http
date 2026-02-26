@@ -1,0 +1,29 @@
+POST http://192.168.0.202
+Accept: application/json
+
+{
+  "sensors": [
+    {
+      "name": "BME_280",
+      "pins": {
+        "SDA": 21,
+        "SCL": 22
+      }
+    },
+    {
+      "name": "DHT_11",
+      "pins": {
+        "DIGITAL": 4
+      }
+    },
+    {
+      "name": "SOIL",
+      "id": 1,
+      "dry": 3300,
+      "wet": 1000,
+      "pins": {
+        "ANALOG": 32
+      }
+    }
+  ]
+}

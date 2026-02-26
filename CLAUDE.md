@@ -58,6 +58,7 @@ All parameters are compile-time constants at the top of `iot.ino`:
 - **ArduinoJson** 7.4.2 — JSON
 - **DHT sensor library** 1.4.6 — DHT11/DHT22
 - **Adafruit BME280 Library** 2.3.0 — BME280
+- **ArduinoOTA** — built-in ESP32 core, OTA via Arduino IDE
 
 ## Implementation Notes
 
@@ -67,3 +68,6 @@ All parameters are compile-time constants at the top of `iot.ino`:
 - **NTP**: uses `configTzTime(TZ_BERLIN, NTP_SERVER)` with POSIX string for automatic DST
 - **Safe GPIO pins for relay**: 4, 13, 32, 33 — start LOW, no peripheral conflicts
 - **Avoid for relay**: GPIO2 (WiFi PHY), GPIO18 (SPI CLK), GPIO25/26/27 (DAC)
+- **ADC (analogRead)**: only ADC1 works with WiFi active — GPIO32, GPIO33, GPIO34, GPIO35, GPIO36, GPIO39. ADC2 (GPIO0,2,4,12-15,25-27) is disabled by WiFi driver.
+- **SOIL calibration**: `dry`/`wet` values are raw ADC readings (0–4095 on ESP32). Measure with sensor in dry soil → `dry`, in wet soil → `wet`. Example: dry≈3300, wet≈1000.
+- **OTA**: `ArduinoOTA.handle()` runs every loop iteration. Upload via Arduino IDE (device appears in network ports after boot).

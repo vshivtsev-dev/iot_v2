@@ -1,0 +1,15 @@
+POST http://192.168.0.202
+Accept: application/json
+
+{
+  "functions": {
+    "PUMP": {
+      "1": {
+        "pins": {
+          "DIGITAL": 18
+        },
+        "duration": 1000
+      }
+    }
+  }
+}
