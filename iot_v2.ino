@@ -98,6 +98,19 @@ static int platformFreeHeap() {
 #endif
 }
 
+static void platformSyncNtp() {
+#if defined(ARDUINO_UNOR4_WIFI)
+  if (ntpClient.forceUpdate()) {
+    RTCTime timeToSet((time_t)ntpClient.getEpochTime());
+    RTC.setTime(timeToSet);
+    Serial.println(F("RTC re-synced from NTP"));
+  } else {
+    Serial.println(F("RTC: NTP re-sync failed"));
+  }
+#endif
+  // ESP32: SNTP re-syncs automatically after reconnect
+}
+
 static String platformTimeStr() {
 #if defined(ESP32)
   time_t now = time(nullptr);
@@ -147,29 +160,70 @@ static void runTasks() {
 
 // ============== WiFi watchdog ==============
 
-static int wifiAttempts = 0;
-static const int WIFI_MAX_ATTEMPTS = 3;
+static int wifiAttempts  = 0;
+static int wifiSkipTicks = 0;
+
+// 8 attempts × 10s = ~80s before reboot — covers typical router restarts
+static const int WIFI_MAX_ATTEMPTS = 8;
+
+// Two-condition check: status flag + valid IP.
+// WiFiS3 on Uno R4 can report WL_CONNECTED while the IP stack is broken.
+static bool wifiIsReachable() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (WiFi.localIP() == IPAddress(0, 0, 0, 0)) return false;
+  return true;
+}
+
+// Progressive backoff: attempts 1-2 → every 10s,
+// attempts 3-4 → every 20s, attempts 5+ → every 30s
+static int backoffTicks(int attempts) {
+  if (attempts <= 2) return 0;
+  if (attempts <= 4) return 1;
+  return 2;
+}
 
 static void tickWifi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiAttempts = 0;
+  if (wifiIsReachable()) {
+    wifiAttempts  = 0;
+    wifiSkipTicks = 0;
     return;
   }
+
+  if (wifiSkipTicks > 0) {
+    wifiSkipTicks--;
+    return;
+  }
+
   wifiAttempts++;
   Serial.println("WiFi disconnected, attempt " + String(wifiAttempts) + "/" + String(WIFI_MAX_ATTEMPTS));
+
   if (wifiAttempts >= WIFI_MAX_ATTEMPTS) {
-    Serial.println("Restarting...");
+    Serial.println(F("Restarting..."));
     delay(1000);
     platformRestart();
   }
-  WiFi.disconnect();
-  delay(500);
+
+  // From attempt 2: WiFi.end() for a full driver/chip reset.
+  // Attempt 1 uses soft disconnect — cheaper and often sufficient.
+  if (wifiAttempts >= 2) {
+    WiFi.end();
+    delay(500);
+  } else {
+    WiFi.disconnect();
+    delay(500);
+  }
+
   WiFi.begin(wifiSsid, wifiPass);
   unsigned long t = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - t < 10000)) delay(500);
-  if (WiFi.status() == WL_CONNECTED) {
+  while (!wifiIsReachable() && (millis() - t < 10000)) delay(500);
+
+  if (wifiIsReachable()) {
     Serial.println("Reconnected: " + WiFi.localIP().toString());
-    wifiAttempts = 0;
+    platformSyncNtp();
+    wifiAttempts  = 0;
+    wifiSkipTicks = 0;
+  } else {
+    wifiSkipTicks = backoffTicks(wifiAttempts);
   }
 }
 
