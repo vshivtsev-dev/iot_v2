@@ -131,7 +131,7 @@ struct Task {
 };
 
 static Task tasks[] = {
-  {10000, 0, tickWifi},
+  {5000, 0, tickWifi},
   {60000, 0, tickRestart},
 };
 
@@ -148,10 +148,15 @@ static void runTasks() {
 // ============== WiFi watchdog ==============
 
 static int wifiAttempts = 0;
-static const int WIFI_MAX_ATTEMPTS = 3;
+static const int WIFI_MAX_ATTEMPTS = 6;
+static bool wifiReconnecting = false;
 
 static void tickWifi() {
   if (WiFi.status() == WL_CONNECTED) {
+    if (wifiReconnecting) {
+      Serial.println("Reconnected: " + WiFi.localIP().toString());
+      wifiReconnecting = false;
+    }
     wifiAttempts = 0;
     return;
   }
@@ -163,14 +168,9 @@ static void tickWifi() {
     platformRestart();
   }
   WiFi.disconnect();
-  delay(500);
+  delay(100);
   WiFi.begin(wifiSsid, wifiPass);
-  unsigned long t = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - t < 10000)) delay(500);
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("Reconnected: " + WiFi.localIP().toString());
-    wifiAttempts = 0;
-  }
+  wifiReconnecting = true;
 }
 
 // ============== Daily restart ==============
@@ -455,9 +455,25 @@ void setup() {
   delay(500);
   Serial.println(F("Boot: " PLATFORM_NAME " v2"));
 
+#if defined(ESP32)
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+#endif
   WiFi.begin(wifiSsid, wifiPass);
-  while (WiFi.status() != WL_CONNECTED) { Serial.print('.'); delay(500); }
-  while (WiFi.localIP() == IPAddress(0, 0, 0, 0)) { Serial.print('.'); delay(500); }
+  {
+    unsigned long t = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t < 30000) {
+      Serial.print('.'); delay(500);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println(F("\nWiFi connect timeout, restarting..."));
+      platformRestart();
+    }
+    // Wait for DHCP to assign an IP (Uno R4 reports WL_CONNECTED before IP is ready)
+    while (WiFi.localIP() == IPAddress(0, 0, 0, 0) && millis() - t < 35000) {
+      Serial.print('.'); delay(500);
+    }
+  }
   Serial.println();
   Serial.println(WiFi.localIP());
 
