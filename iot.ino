@@ -1,6 +1,5 @@
 /*
- * Universal sensor & actuator HTTP server — v2
- * Arduino Uno R4 WiFi + ESP32
+ * Sensor & actuator HTTP server for ESP32
  *
  * GET  /help   — full request example
  * GET  /status — platform state (uptime, heap, RSSI, IP)
@@ -9,28 +8,14 @@
  * Architecture:
  *   - Dispatch tables instead of if/else chains
  *   - Single task scheduler (WiFi watchdog + daily restart)
- *   - Platform differences isolated in 3 wrapper functions
  */
 
 #include <ArduinoJson.h>
-
-#if defined(ARDUINO_UNOR4_WIFI)
-  #include <WiFiS3.h>
-  #include <WiFiServer.h>
-  #include <WiFiUdp.h>
-  #include <NTPClient.h>
-  #include "RTC.h"
-  #define PLATFORM_NAME "Arduino Uno R4 WiFi"
-#elif defined(ESP32)
-  #include <WiFi.h>
-  #include <WebServer.h>
-  #include <Wire.h>
-  #include <time.h>
-  #define PLATFORM_NAME "ESP32"
-#else
-  #error "Only Arduino Uno R4 WiFi and ESP32 are supported"
-#endif
-
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Wire.h>
+#include <time.h>
+#include <esp_sntp.h>
 #include "DHT.h"
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
@@ -45,9 +30,8 @@ const char* wifiPass = WIFI_PASS;
 #define RESTART_HOUR   3
 #define RESTART_MINUTE 33
 
-#define NTP_SERVER         "europe.pool.ntp.org"
-#define GMT_OFFSET_SEC     (1 * 3600)
-#define DAYLIGHT_OFFSET    (1 * 3600)
+#define NTP_SERVER  "europe.pool.ntp.org"
+#define TZ_BERLIN   "CET-1CEST,M3.5.0,M10.5.0/3"
 
 // ============== Global objects ==============
 
@@ -58,48 +42,26 @@ static const char* PREF_NS = "iot";
 static const char* PREF_LAST_RESTART_DAY = "lastRestDay";
 static unsigned long bootMs = 0;
 
-#if defined(ARDUINO_UNOR4_WIFI)
-  static WiFiUDP ntpUdp;
-  static NTPClient ntpClient(ntpUdp, NTP_SERVER, GMT_OFFSET_SEC, 0);
-  WiFiServer server(80);
-#else
-  WebServer server(80);
-#endif
+static WebServer server(80);
 
-// ============== 1. Platform abstraction ==============
+// ============== Platform helpers ==============
 
 static void platformRestart() {
   Serial.flush();
   delay(200);
-#if defined(ESP32)
   ESP.restart();
-#else
-  void (*resetFn)(void) = 0;
-  resetFn();
-#endif
 }
 
 static long platformUnixTime() {
-#if defined(ESP32)
   time_t t = time(nullptr);
   return (t > 100000) ? (long)t : -1;
-#else
-  RTCTime t;
-  if (!RTC.getTime(t)) return -1;
-  return (long)t.getUnixTime();
-#endif
 }
 
 static int platformFreeHeap() {
-#if defined(ESP32)
   return (int)ESP.getFreeHeap();
-#else
-  return -1;
-#endif
 }
 
 static String platformTimeStr() {
-#if defined(ESP32)
   time_t now = time(nullptr);
   if (now < 100000) return "";
   struct tm* t = localtime(&now);
@@ -108,18 +70,9 @@ static String platformTimeStr() {
     t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
     t->tm_hour, t->tm_min, t->tm_sec);
   return String(buf);
-#else
-  RTCTime t;
-  if (!RTC.getTime(t)) return "";
-  char buf[20];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-    t.getYear(), (int)t.getMonth(), t.getDayOfMonth(),
-    t.getHour(), t.getMinutes(), t.getSeconds());
-  return String(buf);
-#endif
 }
 
-// ============== 2. Task scheduler ==============
+// ============== Task scheduler ==============
 
 static void tickWifi();
 static void tickRestart();
@@ -166,6 +119,7 @@ static void tickWifi() {
     Serial.println("Restarting...");
     delay(1000);
     platformRestart();
+    return;
   }
   WiFi.disconnect();
   delay(100);
@@ -228,7 +182,8 @@ static void sensorDht(JsonObject req, JsonObject res) {
   float t = dht.readTemperature();
   if (isnan(h) || isnan(t)) { res["error"] = "Failed to read DHT"; return; }
 
-  JsonObject d = res["DHT_11"].to<JsonObject>();
+  const char* key = (typ == 22) ? "DHT_22" : "DHT_11";
+  JsonObject d = res[key].to<JsonObject>();
   d["temperature"] = round1(t);
   d["humidity"]    = round1(h);
 }
@@ -241,9 +196,7 @@ static void sensorBme280(JsonObject req, JsonObject res) {
     res["error"] = "BME_280: required pins.SDA and pins.SCL";
     return;
   }
-#if defined(ESP32)
   Wire.begin(sda, scl);
-#endif
   if (!bme280.begin(0x76)) { res["error"] = "BME280 not available"; return; }
 
   float t = bme280.readTemperature();
@@ -276,7 +229,7 @@ static void sensorSoil(JsonObject req, JsonObject res) {
   s1["sensorValue"] = raw;
 }
 
-// ============== 3. Sensor dispatch table ==============
+// ============== Sensor dispatch table ==============
 
 struct SensorEntry { const char* name; void (*fn)(JsonObject, JsonObject); };
 
@@ -287,7 +240,7 @@ static SensorEntry SENSOR_TABLE[] = {
 };
 static const size_t SENSOR_COUNT = sizeof(SENSOR_TABLE) / sizeof(SENSOR_TABLE[0]);
 
-// ============== 4. Functions ==============
+// ============== Functions ==============
 
 static void funcPump(JsonObject req, JsonObject res) {
   JsonObject pins = req["pins"].as<JsonObject>();
@@ -306,7 +259,7 @@ static void funcPump(JsonObject req, JsonObject res) {
   res["executed"] = true;
 }
 
-// ============== 4. Function dispatch table ==============
+// ============== Function dispatch table ==============
 
 struct FuncEntry { const char* name; void (*fn)(JsonObject, JsonObject); };
 
@@ -336,18 +289,18 @@ static String getHelpJson() {
   soil["pins"].to<JsonObject>()["ANALOG"] = 0;
 
   JsonObject pump1 = root["functions"]["PUMP"]["1"].to<JsonObject>();
-  pump1["pins"].to<JsonObject>()["DIGITAL"] = 2;
+  pump1["pins"].to<JsonObject>()["DIGITAL"] = 4;
   pump1["duration"] = 400;
 
   String out; serializeJson(doc, out); return out;
 }
 
-// ============== 5. GET /status ==============
+// ============== GET /status ==============
 
 static String getStatusJson() {
   JsonDocument doc;
   JsonObject root = doc.to<JsonObject>();
-  root["platform"] = PLATFORM_NAME;
+  root["platform"] = "ESP32";
 
   unsigned long upSec = (millis() - bootMs) / 1000UL;
   char upBuf[20];
@@ -360,8 +313,7 @@ static String getStatusJson() {
 
   root["wifiRssi"] = WiFi.RSSI();
   root["ip"]       = WiFi.localIP().toString();
-  int heap = platformFreeHeap();
-  if (heap >= 0) root["freeHeap"] = heap;
+  root["freeHeap"] = platformFreeHeap();
   String out; serializeJson(doc, out); return out;
 }
 
@@ -377,7 +329,6 @@ static String processCommand(const String& body) {
 
   JsonDocument resDoc;
   JsonObject res = resDoc.to<JsonObject>();
-  res["ok"] = true;
   JsonArray sensorsOut = res["sensors"].to<JsonArray>();
   JsonArray funcsOut   = res["functions"].to<JsonArray>();
 
@@ -430,22 +381,10 @@ static String processCommand(const String& body) {
 
 // ============== HTTP helpers ==============
 
-#if defined(ARDUINO_UNOR4_WIFI)
-static void sendJsonResponse(WiFiClient& client, int code, const String& json) {
-  client.println("HTTP/1.1 " + String(code) + " OK");
-  client.println("Content-Type: application/json; charset=utf-8");
-  client.println("Access-Control-Allow-Origin: *");
-  client.println("Connection: close");
-  client.println("Content-Length: " + String(json.length()));
-  client.println();
-  client.print(json);
-}
-#else
 static void sendJsonResponse(int code, const String& json) {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(code, "application/json", json);
 }
-#endif
 
 // ============== Setup ==============
 
@@ -453,12 +392,10 @@ void setup() {
   bootMs = millis();
   Serial.begin(115200);
   delay(500);
-  Serial.println(F("Boot: " PLATFORM_NAME " v2"));
+  Serial.println(F("Boot"));
 
-#if defined(ESP32)
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-#endif
   WiFi.begin(wifiSsid, wifiPass);
   {
     unsigned long t = millis();
@@ -469,41 +406,16 @@ void setup() {
       Serial.println(F("\nWiFi connect timeout, restarting..."));
       platformRestart();
     }
-    // Wait for DHCP to assign an IP (Uno R4 reports WL_CONNECTED before IP is ready)
-    while (WiFi.localIP() == IPAddress(0, 0, 0, 0) && millis() - t < 35000) {
-      Serial.print('.'); delay(500);
-    }
   }
   Serial.println();
   Serial.println(WiFi.localIP());
 
-#if defined(ESP32)
-  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET, NTP_SERVER);
+  configTzTime(TZ_BERLIN, NTP_SERVER);
   for (int i = 0; i < 20; i++) {
-    if (time(nullptr) > 100000) break;
+    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) break;
     delay(500);
   }
-#else
-  RTC.begin();
-  ntpClient.begin();
-  bool ntpSynced = false;
-  for (int i = 0; i < 20 && !ntpSynced; i++) {
-    if (ntpClient.update()) {
-      RTCTime timeToSet((time_t)ntpClient.getEpochTime());
-      RTC.setTime(timeToSet);
-      ntpSynced = true;
-    } else {
-      delay(500);
-    }
-  }
-  if (ntpSynced) {
-    Serial.println(F("RTC synced from NTP"));
-  } else {
-    Serial.println(F("RTC: NTP sync failed"));
-  }
-#endif
 
-#if defined(ESP32)
   server.on("/help", HTTP_GET, []() {
     sendJsonResponse(200, getHelpJson());
   });
@@ -519,7 +431,6 @@ void setup() {
   server.onNotFound([]() {
     server.send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
   });
-#endif
 
   server.begin();
   Serial.print(F("Server started. GET /help /status, POST /. Daily restart at "));
@@ -531,62 +442,7 @@ void setup() {
 
 // ============== Loop ==============
 
-#if defined(ARDUINO_UNOR4_WIFI)
-
-void loop() {
-  runTasks();
-  WiFiClient client = server.available();
-  if (!client) return;
-
-  String reqLine = client.readStringUntil('\n');
-  reqLine.trim();
-  String method, path;
-  int sp = reqLine.indexOf(' ');
-  if (sp > 0) {
-    method = reqLine.substring(0, sp);
-    int sp2 = reqLine.indexOf(' ', sp + 1);
-    path = sp2 > 0 ? reqLine.substring(sp + 1, sp2) : "";
-  }
-
-  int contentLength = 0;
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    if (line == "\r" || line.isEmpty()) break;
-    if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
-      contentLength = line.substring(line.indexOf(':') + 1).toInt();
-    }
-  }
-
-  String body;
-  if (contentLength > 0) {
-    unsigned long to = millis() + 5000;
-    while (client.connected() && (int)body.length() < contentLength && millis() < to) {
-      if (client.available()) body += (char)client.read();
-    }
-    body.trim();
-  }
-
-  if (path == "/help" && method == "GET") {
-    sendJsonResponse(client, 200, getHelpJson());
-  } else if (path == "/status" && method == "GET") {
-    sendJsonResponse(client, 200, getStatusJson());
-  } else if (path == "/" && method == "POST") {
-    String json = body.isEmpty() ? "{\"ok\":false,\"error\":\"no data\"}" : processCommand(body);
-    sendJsonResponse(client, 200, json);
-  } else {
-    sendJsonResponse(client, 404, "{\"ok\":false,\"error\":\"not found\"}");
-  }
-
-  client.flush();
-  delay(10);
-  client.stop();
-}
-
-#else
-
 void loop() {
   runTasks();
   server.handleClient();
 }
-
-#endif
